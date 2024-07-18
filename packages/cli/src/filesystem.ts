@@ -1,6 +1,6 @@
 import path from 'path';
 import fs, { existsSync, readFileSync } from 'fs';
-import ts from 'typescript';
+import esbuild from 'esbuild';
 
 export function createDirIfNotExists(dir: string) {
   if (!fs.existsSync(dir)) {
@@ -37,49 +37,54 @@ export function getDataDir() {
   return DATA_DIR;
 }
 
-export function transpileTsFile(filename: string) {
-  const source = fs.readFileSync(filename, 'utf8');
-  return transpileTsString(source);
-}
+export function bundleTsFile(filename: string, outpath: string) {
+  const packagePath = findClosestPackageDirectory(process.cwd());
 
-export function transpileTsString(source: string) {
-  const result = ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ESNext,
-      module: ts.ModuleKind.ESNext,
-    },
+  const isModule = isPackageEsm(packagePath);
+  const potentialTsconfigPath = path.join(packagePath, 'tsconfig.json');
+
+  const tsconfigPath = fs.existsSync(potentialTsconfigPath)
+    ? potentialTsconfigPath
+    : undefined;
+
+  esbuild.buildSync({
+    entryPoints: [filename],
+    outfile: outpath,
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: isModule ? 'esm' : 'cjs',
+    tsconfig: tsconfigPath,
   });
-  return result.outputText;
 }
 
-function findClosestPackageJson(startPath: string) {
+function findClosestPackageDirectory(startPath: string) {
   let dir = startPath;
   while (dir !== path.parse(dir).root) {
-    const potentialPath = path.join(dir, 'package.json');
-    if (fs.existsSync(potentialPath)) {
-      return potentialPath;
+    const packageJsonPath = path.join(dir, 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      return dir;
     }
     dir = path.dirname(dir);
   }
   return null;
 }
 
-function getModuleType(callerPath: string) {
-  const packageJsonPath = findClosestPackageJson(callerPath);
-
-  if (!packageJsonPath) {
+function getModuleType(packagePath: string | null) {
+  if (!packagePath) {
     // default to commonjs
     return 'commonjs';
   }
 
+  const packageJsonPath = path.join(packagePath, 'package.json');
   const packageData = fs.readFileSync(packageJsonPath, 'utf-8');
   const packageJson = JSON.parse(packageData);
 
   return packageJson.type === 'module' ? 'esm' : 'commonjs';
 }
 
-function isCallerESM() {
-  return getModuleType(process.cwd()) === 'esm';
+function isPackageEsm(packagePath: string | null) {
+  return getModuleType(packagePath) === 'esm';
 }
 
 // Within a process, break the import cache in case of file changes
@@ -99,8 +104,10 @@ export async function loadTsModule(filepath: string) {
   const transpiledJsPath = path.join(tmpDir, `_${filename}.${ext}`);
   try {
     if (!fs.existsSync(absolutePath)) return undefined;
-    const transpiledJs = transpileTsFile(absolutePath);
-    return await evalJSString(transpiledJs, { tmpFile: transpiledJsPath });
+    fs.mkdirSync(path.dirname(transpiledJsPath), { recursive: true });
+    await bundleTsFile(absolutePath, transpiledJsPath);
+    const result = await importFresh('file:///' + transpiledJsPath);
+    return result;
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -108,7 +115,7 @@ export async function loadTsModule(filepath: string) {
 
 export async function evalJSString(
   source: string,
-  options: { tmpFile?: string } = {}
+  options: { tmpFile?: string } = {},
 ) {
   let transpiledJsPath = options.tmpFile;
   try {
