@@ -100,12 +100,11 @@ export async function loadTsModule(filepath: string) {
   const dir = path.dirname(absolutePath);
   const filename = path.basename(absolutePath, '.ts');
   const tmpDir = path.join(dir, 'tmp');
-  const ext = isCallerESM() ? 'js' : 'mjs';
-  const transpiledJsPath = path.join(tmpDir, `_${filename}.${ext}`);
+  const transpiledJsPath = path.join(tmpDir, `_${filename}.js`);
   try {
     if (!fs.existsSync(absolutePath)) return undefined;
     fs.mkdirSync(path.dirname(transpiledJsPath), { recursive: true });
-    await bundleTsFile(absolutePath, transpiledJsPath);
+    bundleTsFile(absolutePath, transpiledJsPath);
     const result = await importFresh('file:///' + transpiledJsPath);
     return result;
   } finally {
